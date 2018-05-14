@@ -105,10 +105,14 @@ type Server struct {
 	Router      *gin.Engine
 	AdminRouter *gin.Engine
 
-	webListenPort    int
-	adminListenPort  int
-	grpcListenPort   int
-	agent            agent.Agent
+	webListenPort   int
+	adminListenPort int
+	grpcListenPort  int
+	agent           agent.Agent
+	// TODO TRIGGERWIP : reconsider where these live
+	enqueueDataAccess agent.EnqueueDataAccess
+	readDataAccess    agent.ReadDataAccess
+
 	datastore        models.Datastore
 	mq               models.MessageQueue
 	logstore         models.LogStore
@@ -232,6 +236,7 @@ func WithDBURL(dbURL string) ServerOption {
 				return err
 			}
 			s.datastore = ds
+			s.readDataAccess = agent.NewCachedDataAccess(s.datastore)
 		}
 		return nil
 	}
@@ -245,6 +250,7 @@ func WithMQURL(mqURL string) ServerOption {
 				return err
 			}
 			s.mq = mq
+			s.enqueueDataAccess = agent.NewDirectEnqueueAccess(mq)
 		}
 		return nil
 	}
@@ -265,12 +271,13 @@ func WithLogURL(logstoreURL string) ServerOption {
 
 func WithRunnerURL(runnerURL string) ServerOption {
 	return func(ctx context.Context, s *Server) error {
+
 		if runnerURL != "" {
 			cl, err := hybrid.NewClient(runnerURL)
 			if err != nil {
 				return err
 			}
-			s.agent = agent.New(agent.NewCachedDataAccess(cl))
+			s.readDataAccess = agent.NewCachedDataAccess(cl)
 		}
 		return nil
 	}
@@ -334,9 +341,17 @@ func WithNodeCertAuthority(ca string) ServerOption {
 	}
 }
 
+func WithReadDataAccess(ds agent.ReadDataAccess) ServerOption {
+	return func(ctx context.Context, s *Server) error {
+		s.readDataAccess = ds
+		return nil
+	}
+}
+
 func WithDatastore(ds models.Datastore) ServerOption {
 	return func(ctx context.Context, s *Server) error {
 		s.datastore = ds
+		s.readDataAccess = agent.NewCachedDataAccess(ds)
 		return nil
 	}
 }
@@ -344,6 +359,7 @@ func WithDatastore(ds models.Datastore) ServerOption {
 func WithMQ(mq models.MessageQueue) ServerOption {
 	return func(ctx context.Context, s *Server) error {
 		s.mq = mq
+		s.enqueueDataAccess = agent.NewDirectEnqueueAccess(mq)
 		return nil
 	}
 }
@@ -399,7 +415,9 @@ func WithFullAgent() ServerOption {
 		if s.datastore == nil || s.logstore == nil || s.mq == nil {
 			return errors.New("Full nodes must configure FN_DB_URL, FN_LOG_URL, FN_MQ_URL.")
 		}
-		s.agent = agent.New(agent.NewCachedDataAccess(agent.NewDirectDataAccess(s.datastore, s.logstore, s.mq)))
+		da := agent.NewDirectCallDataAccess(s.logstore, s.mq)
+		dq := agent.NewDirectDequeueAccess(s.mq)
+		s.agent = agent.New(da, agent.WithAsync(dq))
 		return nil
 	}
 }
@@ -420,7 +438,8 @@ func WithAgentFromEnv() ServerOption {
 			if err != nil {
 				return err
 			}
-			s.agent = agent.New(agent.NewCachedDataAccess(cl))
+			s.readDataAccess = agent.NewCachedDataAccess(cl)
+			s.agent = agent.New(cl)
 		case ServerTypePureRunner:
 			if s.datastore != nil {
 				return errors.New("Pure runner nodes must not be configured with a datastore (FN_DB_URL).")
@@ -474,8 +493,8 @@ func WithAgentFromEnv() ServerOption {
 
 			keys := []string{"fn_appname", "fn_path"}
 			pool.RegisterPlacerViews(keys)
-
-			s.agent, err = agent.NewLBAgent(agent.NewCachedDataAccess(cl), runnerPool, placer)
+			s.readDataAccess = agent.NewCachedDataAccess(cl)
+			s.agent, err = agent.NewLBAgent(cl, runnerPool, placer)
 			if err != nil {
 				return errors.New("LBAgent creation failed")
 			}

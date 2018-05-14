@@ -5,6 +5,7 @@ const (
 	AppName string = "app_name"
 	AppID   string = "app_id"
 	Path    string = "path"
+	Func    string = "func"
 
 	// Gin  URL template parameters
 	ParamAppID     string = "appId"
@@ -13,4 +14,7 @@ const (
 	ParamTriggerID string = "triggerId"
 	ParamCallID    string = "call"
 	ParamFnID      string = "fnId"
+
+	//
+	ParamSource string = "source"
 )

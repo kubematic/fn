@@ -56,13 +56,9 @@ const (
 	ceMimeType = "application/cloudevents+json"
 )
 
-func FromRequest(a Agent, app *models.App, path string, req *http.Request) CallOpt {
+func FromRequest(app *models.App, route *models.Route, req *http.Request) CallOpt {
 	return func(c *call) error {
 		ctx := req.Context()
-		route, err := a.GetRoute(ctx, app.ID, path)
-		if err != nil {
-			return err
-		}
 
 		log := common.Logger(ctx)
 		// Check whether this is a CloudEvent, if coming in via HTTP router (only way currently), then we'll look for a special header
@@ -125,7 +121,94 @@ func FromRequest(a Agent, app *models.App, path string, req *http.Request) CallO
 			Memory:      route.Memory,
 			CPUs:        route.CPUs,
 			Config:      buildConfig(app, route),
-			Annotations: buildAnnotations(app, route),
+			Annotations: app.Annotations.MergeChange(route.Annotations),
+			Headers:     req.Header,
+			CreatedAt:   common.DateTime(time.Now()),
+			URL:         reqURL(req),
+			Method:      req.Method,
+			AppID:       app.ID,
+			SyslogURL:   syslogURL,
+		}
+
+		c.req = req
+		return nil
+	}
+}
+
+// Sets up a call from an http trigger request
+func FromHttpTriggerRequest(app *models.App, fn *models.Fn, trigger *models.Trigger, req *http.Request) CallOpt {
+	return func(c *call) error {
+		ctx := req.Context()
+
+		log := common.Logger(ctx)
+		// Check whether this is a CloudEvent, if coming in via HTTP router (only way currently), then we'll look for a special header
+		// Content-Type header: https://github.com/cloudevents/spec/blob/master/http-transport-binding.md#32-structured-content-mode
+		// Expected Content-Type for a CloudEvent: application/cloudevents+json; charset=UTF-8
+		contentType := req.Header.Get("Content-Type")
+		t, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			// won't fail here, but log
+			log.Debugf("Could not parse Content-Type header: %v", err)
+		} else {
+			if t == ceMimeType {
+				c.IsCloudEvent = true
+				fn.Format = models.FormatCloudEvent
+			}
+		}
+
+		if fn.Format == "" {
+			fn.Format = models.FormatDefault
+		}
+
+		id := id.New().String()
+
+		// TODO this relies on ordering of opts, but tests make sure it works, probably re-plumb/destroy headers
+		// TODO async should probably supply an http.ResponseWriter that records the logs, to attach response headers to
+		if rw, ok := c.w.(http.ResponseWriter); ok {
+			rw.Header().Add("FN_CALL_ID", id)
+			//for k, vs := range route.Headers {
+			//	for _, v := range vs {
+			//		// pre-write in these headers to response
+			//		rw.Header().Add(k, v)
+			//	}
+			//}
+		}
+
+		// this ensures that there is an image, path, timeouts, memory, etc are valid.
+		// NOTE: this means assign any changes above into route's fields
+		err = fn.Validate()
+		if err != nil {
+			return err
+		}
+
+		err = trigger.Validate()
+		if err != nil {
+			return err
+		}
+
+		var syslogURL string
+		if app.SyslogURL != nil {
+			syslogURL = *app.SyslogURL
+		}
+
+		c.Call = &models.Call{
+			ID:    id,
+			Path:  trigger.Source,
+			Image: fn.Image,
+			// Delay: 0,
+			Type:   "sync",
+			Format: fn.Format,
+			// Payload: TODO,
+			Priority:    new(int32), // TODO this is crucial, apparently
+			Timeout:     fn.Timeout,
+			IdleTimeout: fn.IdleTimeout,
+			TmpFsSize:   0, // TODO clean up this
+			Memory:      fn.Memory,
+			CPUs:        0, // TODO clean up this
+			Config:      buildTriggerConfig(app, fn, trigger),
+			// TODO - this wasn't really the intention here (that annotations would naturally cascade
+			// but seems to be necessary for some runner behaviour
+			Annotations: app.Annotations.MergeChange(fn.Annotations).MergeChange(trigger.Annotations),
 			Headers:     req.Header,
 			CreatedAt:   common.DateTime(time.Now()),
 			URL:         reqURL(req),
@@ -162,15 +245,23 @@ func buildConfig(app *models.App, route *models.Route) models.Config {
 	return conf
 }
 
-func buildAnnotations(app *models.App, route *models.Route) models.Annotations {
-	ann := make(models.Annotations, len(app.Annotations)+len(route.Annotations))
-	for k, v := range app.Annotations {
-		ann[k] = v
+func buildTriggerConfig(app *models.App, route *models.Fn, trigger *models.Trigger) models.Config {
+	conf := make(models.Config, 8+len(app.Config)+len(route.Config))
+	for k, v := range app.Config {
+		conf[k] = v
 	}
-	for k, v := range route.Annotations {
-		ann[k] = v
+	for k, v := range route.Config {
+		conf[k] = v
 	}
-	return ann
+
+	conf["FN_FORMAT"] = route.Format
+	conf["FN_APP_NAME"] = app.Name
+	conf["FN_PATH"] = trigger.Source
+	// TODO: might be a good idea to pass in: "FN_BASE_PATH" = fmt.Sprintf("/r/%s", appName) || "/" if using DNS entries per app
+	conf["FN_MEMORY"] = fmt.Sprintf("%d", route.Memory)
+	conf["FN_TYPE"] = "sync"
+
+	return conf
 }
 
 func reqURL(req *http.Request) string {
@@ -286,7 +377,7 @@ func (a *agent) GetCall(opts ...CallOpt) (Call, error) {
 
 	setupCtx(&c)
 
-	c.da = a.da
+	c.da = a.cda
 	c.ct = a
 	c.stderr = setupLogger(c.req.Context(), a.cfg.MaxLogSize, c.Call)
 	if c.w == nil {
@@ -320,7 +411,7 @@ type call struct {
 	// IsCloudEvent flag whether this was ingested as a cloud event. This may become the default or only way.
 	IsCloudEvent bool `json:"is_cloud_event"`
 
-	da             DataAccess
+	da             CallDataAcesss
 	w              io.Writer
 	req            *http.Request
 	stderr         io.ReadWriteCloser

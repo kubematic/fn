@@ -163,7 +163,7 @@ func (s *Server) checkAppPresenceByNameAtRunner() gin.HandlerFunc {
 
 		appName := c.Param(api.ParamAppName)
 		if appName != "" {
-			appID, err := s.agent.GetAppID(ctx, appName)
+			appID, err := s.readDataAccess.GetAppID(ctx, appName)
 			if err != nil {
 				handleV1ErrorResponse(c, err)
 				c.Abort()

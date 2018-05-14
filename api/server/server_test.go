@@ -112,7 +112,7 @@ func prepareDB(ctx context.Context, t *testing.T) (models.Datastore, models.LogS
 	}
 	ss, err := sql.New(ctx, uri)
 	if err != nil {
-		t.Fatalf("Error when creating datastore: %s", err)
+		t.Fatalf("Errorwhen creating datastore: %s", err)
 	}
 	logDB := logs.Wrap(ss)
 	ds := datastore.Wrap(ss)
@@ -219,13 +219,16 @@ func TestRunnerNode(t *testing.T) {
 		{"get all routes not found", "GET", "/v1/apps/myapp/routes", ``, http.StatusBadRequest, 0},
 		{"delete app not found", "DELETE", "/v1/apps/myapp", ``, http.StatusBadRequest, 0},
 	} {
-		_, rec := routerRequest(t, srv.Router, test.method, test.path, bytes.NewBuffer([]byte(test.body)))
+		t.Run(test.name, func(t *testing.T) {
+			_, rec := routerRequest(t, srv.Router, test.method, test.path, bytes.NewBuffer([]byte(test.body)))
 
-		if rec.Code != test.expectedCode {
-			t.Log(buf.String())
-			t.Errorf("Test \"%s\": Expected status code to be %d but was %d",
-				test.name, test.expectedCode, rec.Code)
-		}
+			if rec.Code != test.expectedCode {
+				t.Log(buf.String())
+				t.Errorf("Test \"%s\": Expected status code to be %d but was %d",
+					test.name, test.expectedCode, rec.Code)
+			}
+		})
+
 	}
 }
 
