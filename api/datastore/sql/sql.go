@@ -1345,8 +1345,6 @@ func (ds *SQLStore) GetTriggers(ctx context.Context, filter *models.TriggerFilte
 
 	filterQuery, args := buildFilterTriggerQuery(filter)
 
-	logrus.Error(filterQuery, args)
-
 	query := fmt.Sprintf("%s WHERE %s", triggerSelector, filterQuery)
 	query = ds.db.Rebind(query)
 	rows, err := ds.db.QueryxContext(ctx, query, args...)

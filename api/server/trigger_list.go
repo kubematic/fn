@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 
+	"fmt"
 	"github.com/fnproject/fn/api/models"
 	"github.com/gin-gonic/gin"
 )
@@ -35,8 +36,34 @@ func (s *Server) handleTriggerList(c *gin.Context) {
 		nextCursor = base64.RawURLEncoding.EncodeToString(last)
 	}
 
+	// Annotate the outbound triggers
+
+	// this is fairly cludgy bit hard to do in datastore middleware confidently
+	appCache := make(map[string]*models.App)
+	newTriggers := make([]*models.Trigger, len(triggers))
+
+	for idx, t := range triggers {
+		app, ok := appCache[t.AppID]
+		if !ok {
+			gotApp, err := s.Datastore().GetAppByID(ctx, t.AppID)
+			if err != nil {
+				handleErrorResponse(c, fmt.Errorf("failed to get app for trigger %s", err))
+				return
+			}
+			app = gotApp
+			appCache[app.ID] = gotApp
+		}
+
+		newT, err := s.triggerAnnotator.AnnotateTrigger(c, app, t)
+		if err != nil {
+			handleErrorResponse(c, err)
+			return
+		}
+		newTriggers[idx] = newT
+	}
+
 	c.JSON(http.StatusOK, triggerListResponse{
 		NextCursor: nextCursor,
-		Items:      triggers,
+		Items:      newTriggers,
 	})
 }
